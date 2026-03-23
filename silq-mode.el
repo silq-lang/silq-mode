@@ -138,16 +138,24 @@ Return non-nil on success."
       (or (looking-back ":=" (line-beginning-position))
           (looking-back "=" (line-beginning-position))))))
 
-(defun silq--matching-if-column ()
-  "Return the column of the nearest preceding `if' token."
+(defun silq--matching-if-anchor ()
+  "Return indentation info for the nearest preceding `if'.
+The result is a cons cell (BASE . ALIGN), where BASE is the
+leading indentation in columns and ALIGN is the number of literal
+characters from the end of indentation to the `if' token."
   (save-excursion
     (let (found)
       (while (and (not found)
                   (re-search-backward "\\_<if\\_>" nil t))
         (unless (or (nth 3 (syntax-ppss))
                     (nth 4 (syntax-ppss)))
-          (goto-char (match-beginning 0))
-          (setq found (current-column))))
+          (let ((if-pos (match-beginning 0)))
+            (goto-char if-pos)
+            (let ((col (current-column)))
+              (back-to-indentation)
+              (setq found
+                    (cons (current-column)
+                          (- if-pos (point))))))))
       found)))
 
 (defun silq--matching-open-delim-indentation ()
@@ -169,8 +177,7 @@ Return non-nil on success."
           (+ (current-indentation) silq-indent-offset))))))
 
 (defun silq--paren-indentation-base ()
-  "Indent one level inside the containing ( or [ form.
-This does not align to the opener column; it adds one indentation level."
+  "Indent one level inside the containing ( or [ form."
   (let* ((ppss (silq--ppss-bol))
          (open (nth 1 ppss)))
     (when open
@@ -180,7 +187,11 @@ This does not align to the opener column; it adds one indentation level."
           (+ (current-indentation) silq-indent-offset))))))
 
 (defun silq-calculate-indentation ()
-  "Compute indentation for current line."
+  "Compute indentation for current line.
+
+Return either an integer column, or a cons (BASE . ALIGN).
+(BASE . ALIGN) means: indent BASE columns structurally, then add
+ALIGN literal spaces for alignment."
   (save-excursion
     (beginning-of-line)
     (cond
@@ -193,14 +204,15 @@ This does not align to the opener column; it adds one indentation level."
      ((silq--inside-comment-p)
       (current-indentation))
 
-     ;; then / else align with the actual `if' token
+     ;; then / else align with the actual `if' token,
+     ;; but using spaces after the line's base indentation.
      ((silq--line-starts-with-then-p)
-      (or (silq--matching-if-column)
+      (or (silq--matching-if-anchor)
           (silq--previous-line-indentation)
           0))
 
      ((silq--line-starts-with-else-p)
-      (or (silq--matching-if-column)
+      (or (silq--matching-if-anchor)
           (silq--previous-line-indentation)
           0))
 
@@ -222,7 +234,7 @@ This does not align to the opener column; it adds one indentation level."
             (silq--paren-indentation-base)
             0)))
 
-     ;; inside (...) or [...] => one extra level, not opener-column alignment
+     ;; inside (...) or [...] => one extra level
      ((silq--paren-indentation-base)
       (silq--paren-indentation-base))
 
@@ -232,13 +244,25 @@ This does not align to the opener column; it adds one indentation level."
           0)))))
 
 (defun silq-indent-line ()
-  "Indent current line according to Silq structure."
+  "Indent current line according to Silq structure.
+Use tabs for indentation levels and spaces for alignment."
   (interactive)
-  (let ((target (silq-calculate-indentation))
-        (offset (- (current-column) (current-indentation))))
-    (indent-line-to target)
-    (when (> offset 0)
-      (move-to-column (+ target offset)))))
+  (let* ((spec (silq-calculate-indentation))
+         (base (if (consp spec) (car spec) spec))
+         (align (if (consp spec) (cdr spec) 0))
+         (tabs (/ base silq-indent-offset))
+         (spaces (+ (% base silq-indent-offset) align))
+         (prefix (concat
+                  (make-string tabs ?\t)
+                  (make-string spaces ?\s)))
+         (pos-from-eol (- (point-max) (point))))
+    (save-excursion
+      (beginning-of-line)
+      (delete-horizontal-space)
+      (insert prefix))
+    (goto-char (- (point-max) pos-from-eol))
+    (when (< (current-column) (+ base align))
+      (move-to-column (+ base align)))))
 
 (define-derived-mode silq-mode prog-mode "Silq"
   "Major mode for editing Silq."
