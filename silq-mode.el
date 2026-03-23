@@ -130,6 +130,30 @@ Return non-nil on success."
     (when (silq--previous-significant-line)
       (current-indentation))))
 
+(defun silq--current-line-indent-spec ()
+  "Return current line indentation as (BASE . ALIGN).
+
+BASE is indentation contributed by complete indentation levels.
+ALIGN is extra spaces after that indentation.
+
+This assumes indentation is written as tabs first, then spaces."
+  (save-excursion
+    (beginning-of-line)
+    (let ((tabs 0)
+          (spaces 0))
+      (while (eq (char-after) ?\t)
+        (setq tabs (1+ tabs))
+        (forward-char 1))
+      (while (eq (char-after) ?\s)
+        (setq spaces (1+ spaces))
+        (forward-char 1))
+      (cons (* tabs silq-indent-offset) spaces))))
+
+(defun silq--previous-line-indent-spec ()
+  (save-excursion
+    (when (silq--previous-significant-line)
+      (silq--current-line-indent-spec))))
+
 (defun silq--previous-line-ends-with-assign-p ()
   (save-excursion
     (when (silq--previous-significant-line)
@@ -140,9 +164,9 @@ Return non-nil on success."
 
 (defun silq--matching-if-anchor ()
   "Return indentation info for the nearest preceding `if'.
-The result is a cons cell (BASE . ALIGN), where BASE is the
-leading indentation in columns and ALIGN is the number of literal
-characters from the end of indentation to the `if' token."
+
+The result is (BASE . ALIGN), where BASE is structural indentation
+in columns and ALIGN is extra spaces after that indentation."
   (save-excursion
     (let (found)
       (while (and (not found)
@@ -151,11 +175,14 @@ characters from the end of indentation to the `if' token."
                     (nth 4 (syntax-ppss)))
           (let ((if-pos (match-beginning 0)))
             (goto-char if-pos)
-            (let ((col (current-column)))
-              (back-to-indentation)
+            (let ((indent-pos (progn
+                                (back-to-indentation)
+                                (point))))
               (setq found
-                    (cons (current-column)
-                          (- if-pos (point))))))))
+                    (cons (save-excursion
+                            (goto-char indent-pos)
+                            (current-indentation))
+                          (- if-pos indent-pos)))))))
       found)))
 
 (defun silq--matching-open-delim-indentation ()
@@ -186,6 +213,16 @@ characters from the end of indentation to the `if' token."
         (when (memq (char-after) '(?\( ?\[))
           (+ (current-indentation) silq-indent-offset))))))
 
+(defun silq--previous-line-starts-with-then-p ()
+  (save-excursion
+    (when (silq--previous-significant-line)
+      (silq--line-starts-with-then-p))))
+
+(defun silq--previous-line-starts-with-else-p ()
+  (save-excursion
+    (when (silq--previous-significant-line)
+      (silq--line-starts-with-else-p))))
+
 (defun silq-calculate-indentation ()
   "Compute indentation for current line.
 
@@ -204,17 +241,29 @@ ALIGN literal spaces for alignment."
      ((silq--inside-comment-p)
       (current-indentation))
 
-     ;; then / else align with the actual `if' token,
-     ;; but using spaces after the line's base indentation.
+     ;; then / else in a cascade align with the previous arm.
+     ;; Otherwise they align with the `if' token that starts the tower.
      ((silq--line-starts-with-then-p)
-      (or (silq--matching-if-anchor)
-          (silq--previous-line-indentation)
-          0))
+      (cond
+       ((or (silq--previous-line-starts-with-then-p)
+            (silq--previous-line-starts-with-else-p))
+        (or (silq--previous-line-indent-spec)
+            0))
+       (t
+        (or (silq--matching-if-anchor)
+            (silq--previous-line-indent-spec)
+            0))))
 
      ((silq--line-starts-with-else-p)
-      (or (silq--matching-if-anchor)
-          (silq--previous-line-indentation)
-          0))
+      (cond
+       ((or (silq--previous-line-starts-with-then-p)
+            (silq--previous-line-starts-with-else-p))
+        (or (silq--previous-line-indent-spec)
+            0))
+       (t
+        (or (silq--matching-if-anchor)
+            (silq--previous-line-indent-spec)
+            0))))
 
      ;; closing delimiters align with the line containing their opener
      ((silq--line-starts-with-closing-brace-p)
@@ -245,25 +294,32 @@ ALIGN literal spaces for alignment."
 
 (defun silq-indent-line ()
   "Indent current line according to Silq structure.
-Use tabs for indentation levels and spaces for alignment."
+Use tabs for indentation and spaces for alignment."
   (interactive)
   (let* ((spec (silq-calculate-indentation))
          (base (if (consp spec) (car spec) spec))
          (align (if (consp spec) (cdr spec) 0))
+         (target (+ base align))
          (tabs (/ base silq-indent-offset))
          (spaces (+ (% base silq-indent-offset) align))
          (prefix (concat
                   (make-string tabs ?\t)
                   (make-string spaces ?\s)))
-         (pos-from-eol (- (point-max) (point))))
+         (orig-col (current-column))
+         (orig-indent (current-indentation))
+         (in-indent (<= (point)
+                        (save-excursion
+                          (back-to-indentation)
+                          (point)))))
     (save-excursion
       (beginning-of-line)
       (delete-horizontal-space)
       (insert prefix))
-    (goto-char (- (point-max) pos-from-eol))
-    (when (< (current-column) (+ base align))
-      (move-to-column (+ base align)))))
+    (if in-indent
+        (move-to-column target)
+      (move-to-column (+ target (max 0 (- orig-col orig-indent)))))))
 
+;;;###autoload
 (define-derived-mode silq-mode prog-mode "Silq"
   "Major mode for editing Silq."
   :syntax-table silq-mode-syntax-table
