@@ -64,9 +64,7 @@
     ;; Treat underscore as symbol constituent.
     (modify-syntax-entry ?_ "_" st)
 
-    ;; Leave apostrophe alone in the base syntax table.
-    ;; We make it a symbol constituent only contextually via
-    ;; `syntax-propertize-function', when it trails an identifier.
+    ;; Apostrophe is handled contextually in `silq-syntax-propertize'.
     st)
   "Syntax table for `silq-mode'.")
 
@@ -136,7 +134,7 @@ Return non-nil on success."
 BASE is indentation contributed by complete indentation levels.
 ALIGN is extra spaces after that indentation.
 
-This assumes indentation is written as tabs first, then spaces."
+This assumes indentation is tabs first, then spaces."
   (save-excursion
     (beginning-of-line)
     (let ((tabs 0)
@@ -161,6 +159,32 @@ This assumes indentation is written as tabs first, then spaces."
       (skip-chars-backward " \t")
       (or (looking-back ":=" (line-beginning-position))
           (looking-back "=" (line-beginning-position))))))
+
+(defun silq--first-if-anchor-on-line ()
+  "Return (BASE . ALIGN) for the first `if' token on the current line, or nil."
+  (save-excursion
+    (let ((eol (line-end-position))
+          found)
+      (back-to-indentation)
+      (while (and (not found)
+                  (re-search-forward "\\_<if\\_>" eol t))
+        (unless (or (nth 3 (syntax-ppss (match-beginning 0)))
+                    (nth 4 (syntax-ppss (match-beginning 0))))
+          (let ((if-pos (match-beginning 0)))
+            (back-to-indentation)
+            (setq found
+                  (cons (current-indentation)
+                        (- if-pos (point)))))))
+      found)))
+
+(defun silq--line-nested-if-anchor ()
+  "If current line starts with then/else and contains a nested `if',
+return its anchor (BASE . ALIGN)."
+  (save-excursion
+    (back-to-indentation)
+    (when (or (looking-at-p "\\_<then\\_>")
+              (looking-at-p "\\_<else\\_>"))
+      (silq--first-if-anchor-on-line))))
 
 (defun silq--matching-if-anchor ()
   "Return indentation info for the nearest preceding `if'.
@@ -213,15 +237,35 @@ in columns and ALIGN is extra spaces after that indentation."
         (when (memq (char-after) '(?\( ?\[))
           (+ (current-indentation) silq-indent-offset))))))
 
-(defun silq--previous-line-starts-with-then-p ()
-  (save-excursion
-    (when (silq--previous-significant-line)
-      (silq--line-starts-with-then-p))))
+(defun silq--matching-cascade-anchor ()
+  "Return the anchor for the current then/else line.
 
-(defun silq--previous-line-starts-with-else-p ()
+This scans backward over previous significant lines and tries to
+find the corresponding if/else-if cascade anchor. Nested towers
+introduced by lines like `then if ...' are handled heuristically."
   (save-excursion
-    (when (silq--previous-significant-line)
-      (silq--line-starts-with-else-p))))
+    (let ((plain-arms-seen 0)
+          found)
+      (while (and (not found)
+                  (silq--previous-significant-line))
+        (cond
+         ;; A previous arm that itself introduces `if` starts a nested tower.
+         ;; If we have already seen both arms of that nested tower, skip it
+         ;; and continue searching outward. Otherwise it is our anchor.
+         ((silq--line-nested-if-anchor)
+          (if (>= plain-arms-seen 2)
+              (setq plain-arms-seen 0)
+            (setq found (silq--line-nested-if-anchor))))
+
+         ;; Plain then/else arm inside a tower.
+         ((or (silq--line-starts-with-then-p)
+              (silq--line-starts-with-else-p))
+          (setq plain-arms-seen (1+ plain-arms-seen)))
+
+         ;; Any earlier line containing an `if` is an outer anchor.
+         ((silq--first-if-anchor-on-line)
+          (setq found (silq--first-if-anchor-on-line)))))
+      found)))
 
 (defun silq-calculate-indentation ()
   "Compute indentation for current line.
@@ -241,29 +285,18 @@ ALIGN literal spaces for alignment."
      ((silq--inside-comment-p)
       (current-indentation))
 
-     ;; then / else in a cascade align with the previous arm.
-     ;; Otherwise they align with the `if' token that starts the tower.
+     ;; then / else align to the corresponding if / else-if cascade
      ((silq--line-starts-with-then-p)
-      (cond
-       ((or (silq--previous-line-starts-with-then-p)
-            (silq--previous-line-starts-with-else-p))
-        (or (silq--previous-line-indent-spec)
-            0))
-       (t
-        (or (silq--matching-if-anchor)
-            (silq--previous-line-indent-spec)
-            0))))
+      (or (silq--matching-cascade-anchor)
+          (silq--matching-if-anchor)
+          (silq--previous-line-indent-spec)
+          0))
 
      ((silq--line-starts-with-else-p)
-      (cond
-       ((or (silq--previous-line-starts-with-then-p)
-            (silq--previous-line-starts-with-else-p))
-        (or (silq--previous-line-indent-spec)
-            0))
-       (t
-        (or (silq--matching-if-anchor)
-            (silq--previous-line-indent-spec)
-            0))))
+      (or (silq--matching-cascade-anchor)
+          (silq--matching-if-anchor)
+          (silq--previous-line-indent-spec)
+          0))
 
      ;; closing delimiters align with the line containing their opener
      ((silq--line-starts-with-closing-brace-p)
