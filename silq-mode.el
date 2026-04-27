@@ -240,31 +240,42 @@ in columns and ALIGN is extra spaces after that indentation."
 (defun silq--matching-cascade-anchor ()
   "Return the anchor for the current then/else line.
 
-This scans backward over previous significant lines and tries to
-find the corresponding if/else-if cascade anchor. Nested towers
-introduced by lines like `then if ...' are handled heuristically."
+Scan backward over significant lines and find the corresponding
+if / else-if cascade anchor. Nested towers introduced by
+`then if ...' or `else if ...' are skipped once both of their
+arms have been seen."
   (save-excursion
-    (let ((plain-arms-seen 0)
+    (let ((pending-arms 0)
           found)
       (while (and (not found)
                   (silq--previous-significant-line))
         (cond
-         ;; A previous arm that itself introduces `if` starts a nested tower.
-         ;; If we have already seen both arms of that nested tower, skip it
-         ;; and continue searching outward. Otherwise it is our anchor.
+         ;; A previous then/else line that itself contains an `if`
+         ;; starts a nested cascade.
+         ;;
+         ;; If we have seen fewer than two plain arms since that line,
+         ;; then the current line still belongs to that nested cascade.
+         ;; Otherwise that nested cascade is complete, so skip it and
+         ;; continue searching outward.
          ((silq--line-nested-if-anchor)
-          (if (>= plain-arms-seen 2)
-              (setq plain-arms-seen 0)
-            (setq found (silq--line-nested-if-anchor))))
+          (if (< pending-arms 2)
+              (setq found (silq--line-nested-if-anchor))
+            (setq pending-arms (- pending-arms 2))))
 
-         ;; Plain then/else arm inside a tower.
+         ;; A plain then/else arm contributes one arm to the most recent
+         ;; cascade we are scanning backward through.
          ((or (silq--line-starts-with-then-p)
               (silq--line-starts-with-else-p))
-          (setq plain-arms-seen (1+ plain-arms-seen)))
+          (setq pending-arms (1+ pending-arms)))
 
-         ;; Any earlier line containing an `if` is an outer anchor.
+         ;; Any earlier line containing an `if` can anchor a cascade.
+         ;; Same logic: if we have not already consumed both arms of a
+         ;; more recent cascade, this is the matching anchor.
          ((silq--first-if-anchor-on-line)
-          (setq found (silq--first-if-anchor-on-line)))))
+          (if (< pending-arms 2)
+              (setq found (silq--first-if-anchor-on-line))
+            (setq pending-arms (- pending-arms 2))))))
+
       found)))
 
 (defun silq-calculate-indentation ()
@@ -372,6 +383,7 @@ Use tabs for indentation and spaces for alignment."
                       (shell-quote-argument
                        (file-relative-name (or buffer-file-name "")))
                       " "))
+  (set-input-method "Agda")
   (syntax-propertize (point-max)))
 
 ;;;###autoload
