@@ -246,21 +246,22 @@ This assumes indentation is tabs first, then spaces."
         (let ((line (buffer-substring (line-beginning-position) (line-end-position))))
           (cond
            ((silq--line-nested-if-anchor)
-            (if (= depth 0)
-                (setq found (silq--line-nested-if-anchor))
-              (setq depth (1- depth))))
+            (setq depth (1+ depth)))
 
            ((or (silq--line-starts-with-then-p)
                 (silq--line-starts-with-else-p))
-            (setq depth (1+ depth)))
+            (if (> depth 0)
+                (setq depth (1- depth))))
 
-           ((silq--first-if-anchor-on-line)
+           ((save-excursion (silq--first-if-anchor-on-line))
             (if (= depth 0)
-                (setq found (silq--first-if-anchor-on-line))
+                (setq found (save-excursion (silq--first-if-anchor-on-line)))
               (setq depth (1- depth))))
 
            (t
-            (message "no-match  [depth %d]: %s" depth line)))))
+            (message "no-match  [depth %d]: %s | first-if-anchor: %s"
+                     depth line
+                     (silq--first-if-anchor-on-line))))))
       found)))
 
 
