@@ -45,10 +45,39 @@
     "with")
   "Silq keywords.")
 
+(defconst silq-keyword-regexp
+  (regexp-opt silq-keywords)
+  "Regexp matching Silq keyword text without boundary checks.")
+
+(defun silq--identifier-char-p (ch)
+  "Return non-nil if CH is part of a Silq identifier."
+  (and ch
+       (or (eq (char-syntax ch) ?w)
+           (eq (char-syntax ch) ?_)
+           (eq ch ?'))))
+
+(defun silq--identifier-char-at-p (pos)
+  "Return non-nil if character at POS is part of a Silq identifier."
+  (and (<= (point-min) pos)
+       (< pos (point-max))
+       (silq--identifier-char-p (char-after pos))))
+
+(defun silq--keyword-matcher (limit)
+  "Search for a Silq keyword before LIMIT.
+The match itself is exactly the keyword; surrounding delimiter characters are
+checked but not consumed."
+  (let ((found nil))
+    (while (and (not found)
+                (re-search-forward silq-keyword-regexp limit t))
+      (let ((beg (match-beginning 0))
+            (end (match-end 0)))
+        (unless (or (silq--identifier-char-at-p (1- beg))
+                    (silq--identifier-char-at-p end))
+          (setq found t))))
+    found))
+
 (defconst silq-font-lock-keywords
-  (list
-   `(,(concat "\\_<" (regexp-opt silq-keywords t) "\\_>")
-     . font-lock-keyword-face))
+  '((silq--keyword-matcher . font-lock-keyword-face))
   "Font-lock rules for `silq-mode'.")
 
 (defvar silq-mode-syntax-table
