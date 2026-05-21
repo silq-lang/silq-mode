@@ -53,7 +53,7 @@
   "Return non-nil if CH is part of a Silq identifier."
   (and ch
        (or (eq (char-syntax ch) ?w)
-           (eq (char-syntax ch) ?_)
+           (eq ch ?_)
            (eq ch ?'))))
 
 (defun silq--identifier-char-at-p (pos)
